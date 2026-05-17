@@ -1,0 +1,36 @@
+node_modules/
+dist/
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+.env
+.DS_Store
+docker-compose.override.yml
+
+# Per-plugin build artefacts (the bundled .dlvault.js + worker files).
+# Plugin source code under plugins-dist/<plugin>/src/ IS tracked — only the
+# build output and node_modules are excluded.
+plugins-dist/*/dist/
+plugins-dist/*/node_modules/
+
+# Duplicate/old scaffold directories
+config 2/
+data 2/
+dist 2/
+docs 2/
+frontend 2/
+logs 2/
+migrations 2/
+node_modules 2/
+patches 2/
+project2/
+project2 2/
+public 2/
+scripts 2/
+src 2/
+tests 2/
+
+# Claude Code's local allowlist / session state — never publish
+.claude/
