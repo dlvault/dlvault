@@ -1,0 +1,26 @@
+{
+  "name": "dlvault-frontend",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vueuse/core": "^14.2.1",
+    "axios": "^1.7.0",
+    "lucide-vue-next": "^1.0.0",
+    "pinia": "^2.2.0",
+    "vite-plugin-pwa": "^1.2.0",
+    "vue": "^3.5.0",
+    "vue-router": "^4.4.0",
+    "workbox-window": "^7.4.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.0",
+    "typescript": "^6.0.3",
+    "vite": "^6.0.0",
+    "vue-tsc": "^2.1.0"
+  }
+}
