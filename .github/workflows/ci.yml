@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs when a new commit lands on the same branch — saves
+# minutes when rebasing or pushing fixes quickly.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend — typecheck, build, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        # npm ci respects package-lock.json exactly and recompiles native modules
+        # (better-sqlite3) against the runner's Node version — avoids the
+        # NODE_MODULE_VERSION mismatch we hit when switching Node versions locally.
+        run: npm ci
+
+      - name: TypeScript build (src/)
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+  frontend:
+    name: Frontend — typecheck and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Frontend has its own package.json + build; keep it as a separate job so
+    # backend failures don't mask frontend regressions and vice versa.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
