@@ -1,0 +1,22 @@
+services:
+  dlvault:
+    build: .
+    image: dlvault:latest
+    container_name: dlvault
+    restart: unless-stopped
+    ports:
+      - "${DLVAULT_PORT:-3000}:3000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    # Lokale Pfade per docker-compose.override.yml konfigurieren (wird nicht committed).
+    # Beispiel override:
+    #   services:
+    #     dlvault:
+    #       volumes:
+    #         - /mnt/user/Downloads:/downloads
+    #         - /mnt/user/Mediathek/Filme:/movies
+    #         - /mnt/user/Mediathek/Serien:/series

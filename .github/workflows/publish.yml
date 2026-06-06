@@ -1,0 +1,99 @@
+name: Publish Docker images
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+# Cancel an in-flight publish on the same ref when a newer commit/tag lands.
+# Different refs (e.g. a branch push vs. a tag push for the same SHA) get
+# their own concurrency group so a release-tag build can't kill the trailing
+# `latest` build on main.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Build + push to GHCR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # required to push to ghcr.io
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU (for linux/arm64 emulation)
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Derive the full tag list from the git ref so a v1.2.3 tag publishes
+      # :v1.2.3, :1.2.3, :1.2, :1, :latest and the short SHA — while a plain
+      # push to main only publishes :latest + short SHA.
+      - name: Compute image tags (main)
+        id: meta_main
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/dlvault/dlvault
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=,format=short
+
+      - name: Compute image tags (updater)
+        id: meta_updater
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/dlvault/dlvault-updater
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=,format=short
+
+      # NOTE: no `cache-from`/`cache-to`. Registry-backed buildkit cache was
+      # producing identical image SHAs across consecutive builds when only
+      # small source files changed (cache-hits cascading through the whole
+      # graph), which broke the one-click updater's "is this a new image?"
+      # check and led to a permanent "update available" loop. Cold builds
+      # add ~5 minutes (mostly chromium + playwright firefox install) but
+      # guarantee that every push produces a genuinely distinct image.
+      - name: Build and push main image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta_main.outputs.tags }}
+          labels: ${{ steps.meta_main.outputs.labels }}
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+
+      - name: Build and push updater image
+        uses: docker/build-push-action@v7
+        with:
+          context: docker/updater
+          file: docker/updater/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta_updater.outputs.tags }}
+          labels: ${{ steps.meta_updater.outputs.labels }}

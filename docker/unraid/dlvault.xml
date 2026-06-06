@@ -1,0 +1,232 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>dlvault</Name>
+  <Repository>ghcr.io/dlvault/dlvault:latest</Repository>
+  <Registry>https://github.com/dlvault/dlvault/pkgs/container/dlvault</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/dlvault/dlvault/issues</Support>
+  <Project>https://github.com/dlvault/dlvault</Project>
+  <Overview>
+    Media-library automation for Plex and Jellyfin.
+
+    dlvault watches your watchlist (Trakt or Plex), finds matching releases, hands the links to JDownloader, and post-processes finished downloads into your library — extract, rename, move, and mark the title as collected. Movies, series and music.
+
+    dlvault ships with NO built-in sources. The core is a plugin host: you install whichever source plugins you want through the Plugin settings page, the same way Radarr and Sonarr leave indexers to you. Out of the box it does nothing until you add one.
+
+    Requires a reachable JDownloader instance (MyJDownloader account) for movies and series.
+
+    IMPORTANT: the JDownloader "download folder" setting must point at the SAME host directory you mount as /downloads below. If it does not, downloads finish but are never moved into your library — this is the single most common setup mistake, and dlvault will warn you about it in the dashboard.
+  </Overview>
+  <Category>MediaApp:Video MediaApp:Music Downloaders: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:3000]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/dlvault/dlvault/main/docker/unraid/dlvault.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/dlvault/dlvault/main/frontend/public/icon-192.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>A JDownloader instance connected to a MyJDownloader account (for movies and series). Music downloads run through the plugin itself and need no JDownloader.</Requires>
+
+  <Config
+    Name="WebUI Port"
+    Target="3000"
+    Default="3000"
+    Mode="tcp"
+    Description="Port for the dlvault dashboard."
+    Type="Port"
+    Display="always"
+    Required="true"
+    Mask="false">3000</Config>
+
+  <Config
+    Name="Appdata"
+    Target="/app/data"
+    Default="/mnt/user/appdata/dlvault/data"
+    Mode="rw"
+    Description="Database, installed plugins, encryption key and backups. Back this up — it is the entire state of the application. Must be a real host path: without it Docker creates an anonymous volume that is hard to find and hard to migrate."
+    Type="Path"
+    Display="always"
+    Required="true"
+    Mask="false">/mnt/user/appdata/dlvault/data</Config>
+
+  <Config
+    Name="Logs"
+    Target="/app/logs"
+    Default="/mnt/user/appdata/dlvault/logs"
+    Mode="rw"
+    Description="Application logs. Rotated automatically."
+    Type="Path"
+    Display="always"
+    Required="false"
+    Mask="false">/mnt/user/appdata/dlvault/logs</Config>
+
+  <Config
+    Name="Downloads"
+    Target="/downloads"
+    Default="/mnt/user/downloads"
+    Mode="rw"
+    Description="Where JDownloader writes finished downloads. This MUST be the same host directory that JDownloader itself writes to — otherwise dlvault sees an empty folder and nothing is ever moved into the library. This is by far the most common misconfiguration."
+    Type="Path"
+    Display="always"
+    Required="true"
+    Mask="false">/mnt/user/downloads</Config>
+
+  <Config
+    Name="Movies"
+    Target="/movies"
+    Default="/mnt/user/media/movies"
+    Mode="rw"
+    Description="Your movie library — the folder Plex or Jellyfin scans. Finished downloads are renamed and moved here."
+    Type="Path"
+    Display="always"
+    Required="true"
+    Mask="false">/mnt/user/media/movies</Config>
+
+  <Config
+    Name="Series"
+    Target="/series"
+    Default="/mnt/user/media/series"
+    Mode="rw"
+    Description="Your series library, season/episode structured."
+    Type="Path"
+    Display="always"
+    Required="true"
+    Mask="false">/mnt/user/media/series</Config>
+
+  <Config
+    Name="Music"
+    Target="/music"
+    Default="/mnt/user/media/music"
+    Mode="rw"
+    Description="Optional. Music library for the music vertical. Only needed if you install a music source plugin."
+    Type="Path"
+    Display="advanced"
+    Required="false"
+    Mask="false"/>
+
+  <Config
+    Name="Host data path override (HOST_DATA_DIR)"
+    Target="HOST_DATA_DIR"
+    Default=""
+    Mode=""
+    Description="Leave empty. dlvault detects the host-side path of the Appdata mount by inspecting its own container, and only needs this if that detection fails. Setting it to something that does not match the Appdata mount above breaks the one-click updater's progress display — so an empty field is safer than a guessed one."
+    Type="Variable"
+    Display="advanced-hide"
+    Required="false"
+    Mask="false"/>
+
+  <Config
+    Name="PUID"
+    Target="PUID"
+    Default="99"
+    Mode=""
+    Description="User ID the container runs as. 99 is Unraid's 'nobody' and matches the default ownership of /mnt/user shares — leave it alone unless your shares are owned differently."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">99</Config>
+
+  <Config
+    Name="PGID"
+    Target="PGID"
+    Default="100"
+    Mode=""
+    Description="Group ID the container runs as. 100 is Unraid's 'users' group."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">100</Config>
+
+  <Config
+    Name="Timezone (TZ)"
+    Target="TZ"
+    Default="Europe/Berlin"
+    Mode=""
+    Description="Container timezone. Affects scheduled sync and backup times, and timestamps in the log."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false">Europe/Berlin</Config>
+
+  <Config
+    Name="Docker socket (optional — enables one-click updates)"
+    Target="/var/run/docker.sock"
+    Default=""
+    Mode="rw"
+    Description="OPTIONAL, and off by default on purpose. Mounting it enables the dashboard's Update button, which pulls a new image and recreates this container by itself. It also grants the container full control over Docker on this server — and therefore over the whole machine. dlvault runs source plugins as ordinary in-process code, so an installed plugin inherits that access. Only mount this if you understand that, and only install plugins from sources you trust. Without it dlvault works normally; you update the container the usual Unraid way instead. Value to enter: /var/run/docker.sock"
+    Type="Path"
+    Display="advanced"
+    Required="false"
+    Mask="false"/>
+
+  <Config
+    Name="API token (API_TOKEN)"
+    Target="API_TOKEN"
+    Default=""
+    Mode=""
+    Description="Optional. Set a token to require authentication for the API and the web interface. The dashboard asks for it once and remembers it. Leave empty on a trusted LAN. Required if you want to use the settings backup/restore export endpoints, which return decrypted credentials."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="true"/>
+
+  <Config
+    Name="Kids movies library"
+    Target="/kids-movies"
+    Default=""
+    Mode="rw"
+    Description="Optional. Separate library for children's titles — dlvault routes a download here instead of the main library when its genres match. Also configure the path inside the app under Settings."
+    Type="Path"
+    Display="advanced"
+    Required="false"
+    Mask="false"/>
+
+  <Config
+    Name="Kids series library"
+    Target="/kids-series"
+    Default=""
+    Mode="rw"
+    Description="Optional. Separate series library for children's titles. See above."
+    Type="Path"
+    Display="advanced"
+    Required="false"
+    Mask="false"/>
+
+  <Config
+    Name="Backups"
+    Target="/backups"
+    Default=""
+    Mode="rw"
+    Description="Optional but strongly recommended. Backups default to a folder inside Appdata — which means a lost appdata share takes the database AND every backup with it. Mount a different share here and set it as the backup path under Settings, so your backups survive that."
+    Type="Path"
+    Display="advanced"
+    Required="false"
+    Mask="false"/>
+
+  <Config
+    Name="Boot health check"
+    Target="DLVAULT_BOOT_HEALTHCHECK"
+    Default="true"
+    Mode=""
+    Description="Runs a self-test at startup and writes the verdict to the log. Set to false to skip it."
+    Type="Variable"
+    Display="advanced-hide"
+    Required="false"
+    Mask="false"/>
+
+  <Config
+    Name="Pre-pull updater image"
+    Target="DLVAULT_PREPULL_UPDATER"
+    Default="true"
+    Mode=""
+    Description="Fetches the updater image shortly after startup so the first Update click does not wait for a download. Only relevant when the Docker socket is mounted. Set to false to skip."
+    Type="Variable"
+    Display="advanced-hide"
+    Required="false"
+    Mask="false"/>
+</Container>
