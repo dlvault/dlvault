@@ -1,0 +1,8 @@
+# Force CRLF for Windows scripts so PowerShell 5.1 on Windows Server
+# does not misparse backtick line continuations and ASCII heredocs.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Keep shell scripts as LF
+*.sh  text eol=lf
