@@ -1,0 +1,25 @@
+services:
+  dlvault:
+    build: .
+    image: dlvault:latest
+    container_name: dlvault
+    restart: unless-stopped
+    ports:
+      - "${DLVAULT_PORT:-3000}:3000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      # Without it the container runs on UTC: the bandwidth day/night window,
+      # the weekly digest (Sunday 18:00) and backup times shift by 1–2 hours.
+      - TZ=${TZ:-Europe/Berlin}
+    # Lokale Pfade per docker-compose.override.yml konfigurieren (wird nicht committed).
+    # Beispiel override:
+    #   services:
+    #     dlvault:
+    #       volumes:
+    #         - /mnt/user/downloads:/downloads
+    #         - /mnt/user/media/movies:/movies
+    #         - /mnt/user/media/series:/series

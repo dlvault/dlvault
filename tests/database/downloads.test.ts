@@ -1,0 +1,277 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { applySchema } from '../../src/database/schema';
+
+const { testDb } = vi.hoisted(() => {
+  const Database = require('better-sqlite3');
+  const testDb = new Database(':memory:');
+  testDb.pragma('journal_mode = WAL');
+  testDb.pragma('foreign_keys = ON');
+
+
+  return { testDb };
+});
+
+vi.mock('../../src/database/index', () => ({
+  default: testDb,
+  db: testDb,
+  getSetting: vi.fn(() => ''),
+  setSetting: vi.fn(),
+  getAllSettings: vi.fn(() => ({})),
+  initDatabase: vi.fn(),
+  invalidateSettingsCache: vi.fn(),
+}));
+
+import {
+  addDownload, getDownloadsByMovieId, getDownloadsByMovieIds,
+  updateDownloadStatus, updateDownloadStatusByMovieId, updateDownloadStatusBySeason, getAllDownloads,
+  markReleaseSent,
+} from '../../src/database/services/downloads';
+
+function addTestMovie(traktId: number, title: string): number {
+  return Number(testDb.prepare(
+    `INSERT INTO movies (trakt_id, title, year, media_type, status) VALUES (?, ?, 2024, 'movie', 'found')`
+  ).run(traktId, title).lastInsertRowid);
+}
+
+// Tables come from production's own schema, not a copy. The copies had drifted
+// badly — production `movies` has 33 columns, these fixtures had 14–17 — so
+// anything touching e.g. quality_override or season_cutoff was untestable here.
+applySchema(testDb);
+
+describe('Downloads DB Service', () => {
+  beforeEach(() => {
+    testDb.exec('DELETE FROM downloads');
+    testDb.exec('DELETE FROM movies');
+  });
+
+  it('should add and retrieve a download', () => {
+    const movieId = addTestMovie(1, 'DL Test');
+    const dl = addDownload({
+      movie_id: movieId,
+      release_name: 'Test.2024.1080p',
+      quality: '1080p',
+      audio: '5.1',
+      hoster: 'example-host',
+      download_url: 'https://example.com/file/abc',
+    });
+
+    expect(dl.movie_id).toBe(movieId);
+    const downloads = getDownloadsByMovieId(movieId);
+    expect(downloads).toHaveLength(1);
+    expect(downloads[0].release_name).toBe('Test.2024.1080p');
+  });
+
+  it('should skip duplicate download URLs for same movie', () => {
+    const movieId = addTestMovie(2, 'Dup DL');
+    addDownload({ movie_id: movieId, download_url: 'https://example.com/1' });
+    addDownload({ movie_id: movieId, download_url: 'https://example.com/1' }); // duplicate
+
+    expect(getDownloadsByMovieId(movieId)).toHaveLength(1);
+  });
+
+  it('re-adding an existing URL makes that row the newest attempt again', () => {
+    const movieId = addTestMovie(20, 'Re-chosen release');
+    addDownload({ movie_id: movieId, quality: '2160p', download_url: 'https://example.com/uhd' });
+    addDownload({ movie_id: movieId, quality: '1080p', download_url: 'https://example.com/hd' });
+    // Pin the order explicitly — datetime('now') has second resolution.
+    testDb.prepare("UPDATE downloads SET created_at = '2026-07-22 11:00:00' WHERE download_url = 'https://example.com/uhd'").run();
+    testDb.prepare("UPDATE downloads SET created_at = '2026-08-05 18:00:00' WHERE download_url = 'https://example.com/hd'").run();
+    expect(getDownloadsByMovieId(movieId)[0].quality).toBe('1080p');
+
+    addDownload({ movie_id: movieId, quality: '2160p', download_url: 'https://example.com/uhd' });
+
+    const rows = getDownloadsByMovieId(movieId);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].quality).toBe('2160p');
+    expect(getDownloadsByMovieIds([movieId]).get(movieId)![0].quality).toBe('2160p');
+  });
+
+  it('should allow same URL for different movies', () => {
+    const movie1 = addTestMovie(3, 'Movie 1');
+    const movie2 = addTestMovie(4, 'Movie 2');
+
+    addDownload({ movie_id: movie1, download_url: 'https://example.com/shared' });
+    addDownload({ movie_id: movie2, download_url: 'https://example.com/shared' });
+
+    expect(getDownloadsByMovieId(movie1)).toHaveLength(1);
+    expect(getDownloadsByMovieId(movie2)).toHaveLength(1);
+  });
+
+  it('should update download status', () => {
+    const movieId = addTestMovie(5, 'Status DL');
+    const dl = addDownload({ movie_id: movieId, download_url: 'https://example.com/2' });
+
+    updateDownloadStatus(dl.id, 'sent_to_jd', 'pkg-123');
+
+    const updated = getDownloadsByMovieId(movieId)[0];
+    expect(updated.status).toBe('sent_to_jd');
+    expect(updated.jdownloader_package_id).toBe('pkg-123');
+  });
+
+  it('should update download status without JD package ID', () => {
+    const movieId = addTestMovie(6, 'Status DL 2');
+    const dl = addDownload({ movie_id: movieId, download_url: 'https://example.com/3' });
+
+    updateDownloadStatus(dl.id, 'completed');
+
+    const updated = getDownloadsByMovieId(movieId)[0];
+    expect(updated.status).toBe('completed');
+  });
+
+  it('scopes a status update to one season of a show', () => {
+    // A show's download rows all share its movie_id. The unscoped update marked
+    // every season sent/completed at once, which made downloads.status useless
+    // for deciding what still needs re-sending.
+    const showId = addTestMovie(70, 'Scoped Show');
+    for (const [season, url] of [[1, 'http://s1a'], [1, 'http://s1b'], [2, 'http://s2a']] as [number, string][]) {
+      addDownload({
+        movie_id: showId, season_number: season, release_name: `Show.S0${season}`,
+        quality: '1080p', audio: '5.1', hoster: 'h', download_url: url,
+      });
+    }
+
+    updateDownloadStatusBySeason(showId, 2, 'sent_to_jd');
+
+    const rows = getDownloadsByMovieId(showId);
+    const byUrl = Object.fromEntries(rows.map(r => [r.download_url, r.status]));
+    expect(byUrl['http://s2a']).toBe('sent_to_jd');
+    expect(byUrl['http://s1a']).toBe('pending');
+    expect(byUrl['http://s1b']).toBe('pending');
+  });
+
+  it('targets NULL-season rows separately from numbered seasons', () => {
+    // Movie-shaped/legacy rows carry no season_number; nothing else closes those.
+    const showId = addTestMovie(71, 'Legacy Rows');
+    addDownload({
+      movie_id: showId, release_name: 'Legacy', quality: '1080p', audio: '5.1',
+      hoster: 'h', download_url: 'http://legacy',
+    });
+    addDownload({
+      movie_id: showId, season_number: 1, release_name: 'Show.S01', quality: '1080p',
+      audio: '5.1', hoster: 'h', download_url: 'http://s1',
+    });
+
+    updateDownloadStatusBySeason(showId, null, 'completed');
+
+    const byUrl = Object.fromEntries(getDownloadsByMovieId(showId).map(r => [r.download_url, r.status]));
+    expect(byUrl['http://legacy']).toBe('completed');
+    expect(byUrl['http://s1']).toBe('pending');
+  });
+
+  it('should batch-load downloads by movie IDs', () => {
+    const movie1 = addTestMovie(7, 'Batch 1');
+    const movie2 = addTestMovie(8, 'Batch 2');
+    const movie3 = addTestMovie(9, 'Batch 3');
+
+    addDownload({ movie_id: movie1, download_url: 'https://example.com/a' });
+    addDownload({ movie_id: movie1, download_url: 'https://example.com/b' });
+    addDownload({ movie_id: movie2, download_url: 'https://example.com/c' });
+    // movie3 has no downloads
+
+    const map = getDownloadsByMovieIds([movie1, movie2, movie3]);
+
+    expect(map.get(movie1)).toHaveLength(2);
+    expect(map.get(movie2)).toHaveLength(1);
+    expect(map.has(movie3)).toBe(false);
+  });
+
+  it('should return empty map for empty movie IDs', () => {
+    const map = getDownloadsByMovieIds([]);
+    expect(map.size).toBe(0);
+  });
+
+  it('should cascade delete downloads when movie is deleted', () => {
+    const movieId = addTestMovie(10, 'Cascade DL');
+    addDownload({ movie_id: movieId, download_url: 'https://example.com/del' });
+
+    testDb.prepare('DELETE FROM movies WHERE id = ?').run(movieId);
+    expect(getDownloadsByMovieId(movieId)).toHaveLength(0);
+  });
+
+  it('should get all downloads with movie titles', () => {
+    const movieId = addTestMovie(11, 'All DL');
+    addDownload({ movie_id: movieId, download_url: 'https://example.com/all' });
+
+    const all = getAllDownloads();
+    expect(all.length).toBeGreaterThanOrEqual(1);
+    expect(all.find((d: any) => d.movie_title === 'All DL')).toBeDefined();
+  });
+
+  it('should default hoster to empty string when not specified', () => {
+    const movieId = addTestMovie(12, 'Default Hoster');
+    addDownload({ movie_id: movieId, download_url: 'https://example.com/file' });
+
+    const downloads = getDownloadsByMovieId(movieId);
+    expect(downloads[0].hoster).toBe('');
+  });
+
+  it('should bulk-update download status by movie ID', () => {
+    const movieId = addTestMovie(13, 'Bulk Status');
+    addDownload({ movie_id: movieId, download_url: 'https://example.com/bulk1' });
+    addDownload({ movie_id: movieId, download_url: 'https://example.com/bulk2' });
+    addDownload({ movie_id: movieId, download_url: 'https://example.com/bulk3' });
+
+    // All start as pending
+    const before = getDownloadsByMovieId(movieId);
+    expect(before.every(d => d.status === 'pending')).toBe(true);
+
+    // Bulk update to sent_to_jd
+    updateDownloadStatusByMovieId(movieId, 'sent_to_jd');
+
+    const after = getDownloadsByMovieId(movieId);
+    expect(after.every(d => d.status === 'sent_to_jd')).toBe(true);
+  });
+
+  it('should bulk-update only downloads for the specified movie', () => {
+    const movie1 = addTestMovie(14, 'Bulk Movie 1');
+    const movie2 = addTestMovie(15, 'Bulk Movie 2');
+    addDownload({ movie_id: movie1, download_url: 'https://example.com/m1' });
+    addDownload({ movie_id: movie2, download_url: 'https://example.com/m2' });
+
+    updateDownloadStatusByMovieId(movie1, 'completed');
+
+    expect(getDownloadsByMovieId(movie1)[0].status).toBe('completed');
+    expect(getDownloadsByMovieId(movie2)[0].status).toBe('pending');
+  });
+
+  it('should track full download lifecycle: pending → sent_to_jd → completed', () => {
+    const movieId = addTestMovie(16, 'Lifecycle');
+    addDownload({ movie_id: movieId, download_url: 'https://example.com/lc1' });
+    addDownload({ movie_id: movieId, download_url: 'https://example.com/lc2' });
+
+    // Step 1: Send to JD
+    updateDownloadStatusByMovieId(movieId, 'sent_to_jd');
+    let downloads = getDownloadsByMovieId(movieId);
+    expect(downloads.every(d => d.status === 'sent_to_jd')).toBe(true);
+
+    // Step 2: Complete
+    updateDownloadStatusByMovieId(movieId, 'completed');
+    downloads = getDownloadsByMovieId(movieId);
+    expect(downloads.every(d => d.status === 'completed')).toBe(true);
+  });
+});
+
+describe('markReleaseSent', () => {
+  beforeEach(() => { testDb.exec('DELETE FROM downloads; DELETE FROM movies;'); });
+  const status = (id: number) => getDownloadsByMovieId(id).map(d => `${d.season_number ?? '-'}:${d.release_name}:${d.status}`).sort();
+
+  it('marks only the release that was sent, leaving earlier attempts as they were', () => {
+    const id = addTestMovie(9101, 'Grell');
+    const old = addDownload({ movie_id: id, release_name: 'Grell.OLD', download_url: 'https://h/old' });
+    updateDownloadStatus(old.id, 'completed');
+    addDownload({ movie_id: id, release_name: 'Grell.DEAD', download_url: 'https://h/dead' });
+    addDownload({ movie_id: id, release_name: 'Grell.NEW', download_url: 'https://h/new1' });
+    addDownload({ movie_id: id, release_name: 'Grell.NEW', download_url: 'https://h/new2' });
+    markReleaseSent(id, 'Grell.NEW');
+    expect(status(id)).toEqual(['-:Grell.DEAD:pending', '-:Grell.NEW:sent_to_jd', '-:Grell.NEW:sent_to_jd', '-:Grell.OLD:completed']);
+  });
+
+  it('scopes a season send to that season and release', () => {
+    const id = addTestMovie(9102, 'Sandmere');
+    addDownload({ movie_id: id, season_number: 1, release_name: 'S.S01', download_url: 'https://h/s1' });
+    addDownload({ movie_id: id, season_number: 2, release_name: 'S.S02.A', download_url: 'https://h/s2a' });
+    addDownload({ movie_id: id, season_number: 2, release_name: 'S.S02.B', download_url: 'https://h/s2b' });
+    markReleaseSent(id, 'S.S02.B', 2);
+    expect(status(id)).toEqual(['1:S.S01:pending', '2:S.S02.A:pending', '2:S.S02.B:sent_to_jd']);
+  });
+});
